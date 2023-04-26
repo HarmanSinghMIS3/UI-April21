@@ -4,6 +4,7 @@ const myMSALObj = new msal.PublicClientApplication(msalConfig);
 
 let accountId = '';
 let username = '';
+let accessToken = null;
 
 /**
  * This method adds an event callback function to the MSAL object
@@ -11,7 +12,6 @@ let username = '';
  * https://github.com/AzureAD/microsoft-authentication-library-for-js/blob/dev/lib/msal-browser/docs/events.md
  */
 myMSALObj.addEventCallback((event) => {
-    console.log(event.eventType);
     if (
         (event.eventType === msal.EventType.LOGIN_SUCCESS ||
             event.eventType === msal.EventType.ACQUIRE_TOKEN_SUCCESS) &&
@@ -29,6 +29,7 @@ myMSALObj.addEventCallback((event) => {
                 .getAllAccounts()
                 .find(
                     (account) =>
+                        account.idTokenClaims.oid === event.payload.idTokenClaims.oid &&
                         account.idTokenClaims.sub === event.payload.idTokenClaims.sub &&
                         account.idTokenClaims['tfp'] === b2cPolicies.names.signUpSignIn
                 );
@@ -40,12 +41,12 @@ myMSALObj.addEventCallback((event) => {
 
             // silently login again with the signUpSignIn policy
             myMSALObj.ssoSilent(signUpSignInFlowRequest)
-            .then(() => {
+            .redirect(() => {
                 window.location.reload();
             }).catch((error) => {
                 console.log(error);
                 if (error instanceof msal.InteractionRequiredAuthError) {
-                    myMSALObj.loginPopup({
+                    myMSALObj.loginRedirect({
                         ...signUpSignInFlowRequest,
                     });
                 }
@@ -59,35 +60,43 @@ myMSALObj.addEventCallback((event) => {
          * you can replace the code below with the same pattern used for handling the return from
          * profile edit flow
          */
-
         if (event.payload.idTokenClaims['tfp'] === b2cPolicies.names.forgotPassword) {
-            let signUpSignInFlowRequest = {
-                authority: b2cPolicies.authorities.signUpSignIn.authority,
-            };
-            myMSALObj
-                .loginPopup(signUpSignInFlowRequest)
-                .then(handleResponse)
-                .catch((error) => {
-                    console.log(error);
-                });
+            myMSALObj.loginRedirect(b2cPolicies.authorities.signUpSignIn).catch((error) => {
+                console.log(error);
+            });
         }
     }
 });
 
+myMSALObj
+    .handleRedirectPromise()
+    .then(handleResponse)
+    .catch((error) => {
+        console.log(error);
+
+        // Check for forgot password error
+        // Learn more about AAD error codes at https://docs.microsoft.com/en-us/azure/active-directory/develop/reference-aadsts-error-codes
+        if (error.errorMessage.indexOf('AADB2C90118') > -1) {
+            try {
+                myMSALObj.loginRedirect(b2cPolicies.authorities.forgotPassword);
+            } catch (err) {
+                console.log(err);
+            }
+        }
+    });
+
 function selectAccount() {
     /**
-     * See here for more info on account retrieval:
+     * See here for more information on account retrieval:
      * https://github.com/AzureAD/microsoft-authentication-library-for-js/blob/dev/lib/msal-common/docs/Accounts.md
      */
 
     const currentAccounts = myMSALObj.getAllAccounts();
-
     if (currentAccounts.length === 0) {
         return;
     } else if (currentAccounts.length > 1) {
         // Add your account choosing logic here
         console.log('Multiple accounts detected.');
-
         const originalSignInAccount = myMSALObj
             .getAllAccounts()
             .find((account) => account.idTokenClaims['tfp'] === b2cPolicies.names.signUpSignIn);
@@ -95,7 +104,7 @@ function selectAccount() {
         accountId = originalSignInAccount.homeAccountId;
 
         username = originalSignInAccount.username ? originalSignInAccount.username : originalSignInAccount.name;
-        welcomeUser();
+        welcomeUser(username);
         myMSALObj
             .acquireTokenSilent({
                 account: myMSALObj.getAccountByHomeId(accountId),
@@ -104,11 +113,10 @@ function selectAccount() {
             .then((response) => {
                 updateTable(response.idTokenClaims);
             });
-
     } else if (currentAccounts.length === 1) {
         accountId = currentAccounts[0].homeAccountId;
-        username = currentAccounts[0].username;
-        welcomeUser();
+        username = currentAccounts[0].username ? currentAccounts[0].username : currentAccounts[0].name;
+        welcomeUser(username);
 
         /**
          * In order to obtain the ID Token in the cached obtained previously, you can initiate a
@@ -126,7 +134,6 @@ function selectAccount() {
 }
 
 // in case of page refresh
-selectAccount();
 
 function handleResponse(response) {
     /**
@@ -134,12 +141,13 @@ function handleResponse(response) {
      * https://github.com/AzureAD/microsoft-authentication-library-for-js/blob/dev/lib/msal-browser/docs/request-response-object.md#response
      */
 
-    if (response !== null) {
-        accountId = response.account.homeAccountId;
-        username = response.account.username;
-        welcomeUser();
-        updateTable(response.idTokenClaims);
-    } else {
+    if (response) {
+        // if response contains an access token, store it
+        if (response.accessToken && response.accessToken !== '') {
+            accessToken = response.accessToken;
+        }
+
+        // for handling B2C user-flows and policies
         selectAccount();
     }
 }
@@ -149,22 +157,8 @@ function signIn() {
      * You can pass a custom request object below. This will override the initial configuration. For more information, visit:
      * https://github.com/AzureAD/microsoft-authentication-library-for-js/blob/dev/lib/msal-browser/docs/request-response-object.md#request
      */
-    myMSALObj
-        .loginPopup({
-            ...loginRequest,
-        })
-        .then(handleResponse)
-        .catch((error) => {
-            console.log(error);
-            // Error handling
-            if (error.errorMessage) {
-                // Check for forgot password error
-                // Learn more about AAD error codes at https://docs.microsoft.com/en-us/azure/active-directory/develop/reference-aadsts-error-codes
-                if (error.errorMessage.indexOf('AADB2C90118') > -1) {
-                    myMSALObj.loginPopup(b2cPolicies.authorities.forgotPassword);
-                }
-            }
-        });
+
+    myMSALObj.loginRedirect(loginRequest);
 }
 
 function signOut() {
@@ -173,18 +167,12 @@ function signOut() {
      * https://github.com/AzureAD/microsoft-authentication-library-for-js/blob/dev/lib/msal-browser/docs/request-response-object.md#request
      */
 
-    // Choose which account to logout from.
-
-    const logoutRequest = {
-        mainWindowRedirectUri: 'http://localhost:6420/signout',
-    };
-
-    myMSALObj.logoutPopup(logoutRequest);
+    myMSALObj.logoutRedirect();
 }
 
-function getTokenPopup(request) {
+function getTokenRedirect(request) {
     /**
-     * See here for more information on account retrieval:
+     * See here for more info on account retrieval:
      * https://github.com/AzureAD/microsoft-authentication-library-for-js/blob/dev/lib/msal-common/docs/Accounts.md
      */
 
@@ -198,25 +186,13 @@ function getTokenPopup(request) {
             if (!response.accessToken || response.accessToken === '') {
                 throw new msal.InteractionRequiredAuthError();
             }
-            return response;
+            return handleResponse(response);
         })
         .catch((error) => {
-            console.log(error);
             console.log('silent token acquisition fails. acquiring token using popup');
             if (error instanceof msal.InteractionRequiredAuthError) {
                 // fallback to interaction when silent call fails
-                return myMSALObj
-                    .acquireTokenPopup({
-                        ...request,
-                        redirectUri: '/redirect',
-                    })
-                    .then((response) => {
-                        console.log(response);
-                        return response;
-                    })
-                    .catch((error) => {
-                        console.log(error);
-                    });
+                return myMSALObj.acquireTokenRedirect(request);
             } else {
                 console.log(error);
             }
@@ -224,24 +200,7 @@ function getTokenPopup(request) {
 }
 
 function editProfile() {
-    myMSALObj.loginPopup({
-        ...b2cPolicies.authorities.editProfile,
-    });
+    myMSALObj.loginRedirect(b2cPolicies.authorities.editProfile);
 }
 
-function submitReport() {
-    const progresstDiv = document.getElementById('progress-div');
-    progresstDiv.classList.remove('d-none');
-    var current_progress = 0;
-    var interval = setInterval(function() {
-        current_progress += 25;
-        $("#dynamic")
-        .css("width", current_progress + "%")
-        .attr("aria-valuenow", current_progress)
-        .text(current_progress + "% Complete");
-        if (current_progress >= 100) {
-            progresstDiv.classList.add('d-none');
-            clearInterval(interval);
-        }
-    }, 1000);
-}
+selectAccount();

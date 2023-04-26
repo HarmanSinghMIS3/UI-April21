@@ -2,22 +2,33 @@ const express = require('express');
 const morgan = require('morgan');
 const path = require('path');
 
-//Initialize Express.
+const DEFAULT_PORT = process.env.PORT || 80;
+
+// initialize express.
 const app = express();
 
-// Initialize variables.
-const port = process.env.PORT || 443;
-
-// Configure the morgan module to log all requests.
+// Configure morgan module to log all requests.
 app.use(morgan('dev'));
 
-// Set the front-end folder to serve public assets.
-app.use(express.static('App'))
+// Setup app folders.
+app.use(express.static('App'));
 
-app.get('*', function (req, res) {
-    res.sendFile(path.join(__dirname + '/App/index.html'));
+// Set up a route for signout.html
+app.get('/signout', (req, res) => {
+    res.sendFile(path.join(__dirname + '/App/signout.html'));
 });
 
-// Start the server.
-app.listen(port);
-console.log('Listening on port ' + port + '...');
+app.get('/redirect', (req, res) => {
+    res.sendFile(path.join(__dirname + '/App/redirect.html'));
+});
+
+// Set up a route for index.html
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname + '/index.html'));
+});
+
+app.listen(DEFAULT_PORT, () => {
+    console.log(`Sample app listening on port ${DEFAULT_PORT}!`)
+});
+
+module.exports = app;
